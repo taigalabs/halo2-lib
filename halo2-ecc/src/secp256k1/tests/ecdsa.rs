@@ -185,7 +185,6 @@ impl<F: PrimeField> Circuit<F> for ECDSACircuit<F> {
 #[cfg(test)]
 #[test]
 fn test_secp256k1_ecdsa() {
-    println!("aaaa");
     let mut folder = std::path::PathBuf::new();
     folder.push("./src/secp256k1");
     folder.push("configs/ecdsa_circuit.config");

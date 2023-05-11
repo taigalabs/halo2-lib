@@ -1,0 +1,8 @@
+src/secp256k1/results/**/*
+!src/secp256k1/results/.gitkeep
+
+src/secp256k1/data/**/*
+!src/secp256k1/data/.gitkeep
+
+params/**/*
+!params/.gitkeep

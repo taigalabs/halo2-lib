@@ -3,6 +3,7 @@ members = [
     "halo2-base",
     "halo2-ecc",
     "hashes/zkevm-keccak",
+    "secpq_curves",
 ]
 
 [profile.dev]

@@ -19,6 +19,7 @@ ff = "0.12"
 group = "0.12"
 
 halo2-base = { path = "../halo2-base", default-features = false }
+secpq_curves = { path = "../secpq_curves" }
 
 [dev-dependencies]
 ark-std = { version = "0.3.0", features = ["print-trace"] }
@@ -28,6 +29,7 @@ criterion-macro = "0.4"
 
 [features]
 default = ["jemallocator", "halo2-axiom", "display"]
+# default = ["jemallocator", "halo2-pse", "display"]
 dev-graph = ["halo2-base/dev-graph"]
 display = ["halo2-base/display"]
 halo2-pse = ["halo2-base/halo2-pse"]

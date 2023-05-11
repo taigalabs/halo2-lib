@@ -1,30 +1,42 @@
 #![allow(non_snake_case)]
-use ark_std::{end_timer, start_timer};
-use halo2_base::{utils::PrimeField, SKIP_FIRST_PASS};
-use serde::{Deserialize, Serialize};
-use std::fs::File;
-use std::marker::PhantomData;
-use std::{env::var, io::Write};
-
+use crate::fields::fp::FpConfig;
+use crate::halo2_proofs::transcript::{TranscriptReadBuffer, TranscriptWriterBuffer};
 use crate::halo2_proofs::{
     arithmetic::CurveAffine,
     circuit::*,
     dev::MockProver,
-    halo2curves::bn256::{Bn256, Fr, G1Affine},
-    halo2curves::secp256k1::{Fp, Fq, Secp256k1Affine},
+    // halo2curves::bn256::{Bn256, Fr, G1Affine},
+    halo2curves::secp256k1::Secp256k1Affine as Affine,
     plonk::*,
     poly::commitment::ParamsProver,
     transcript::{Blake2bRead, Blake2bWrite, Challenge255},
 };
-use rand_core::OsRng;
-
-use crate::fields::fp::FpConfig;
 use crate::secp256k1::FpChip;
 use crate::{
     ecc::{ecdsa::ecdsa_verify_no_pubkey_check, EccChip},
     fields::{fp::FpStrategy, FieldChip},
 };
+use ark_std::{end_timer, start_timer};
+use group::prime::PrimeCurveAffine;
+// use halo2_base::halo2_proofs::halo2curves::pasta::{Fp, Fq};
+use halo2_base::halo2_proofs::poly::{
+    ipa::{
+        commitment::{IPACommitmentScheme, ParamsIPA},
+        multiopen::ProverIPA,
+        strategy::SingleStrategy,
+    },
+    VerificationStrategy,
+};
 use halo2_base::utils::{biguint_to_fe, fe_to_biguint, modulus};
+use halo2_base::{utils::PrimeField, SKIP_FIRST_PASS};
+use rand_core::OsRng;
+// use secpq_curves::secp256k1::Affine;
+// use secpq_curves::{Fp, Fq};
+use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::marker::PhantomData;
+use std::{env::set_var, io::BufRead};
+use std::{env::var, io::Write};
 
 #[derive(Serialize, Deserialize)]
 struct CircuitParams {
@@ -42,8 +54,8 @@ pub struct ECDSACircuit<F> {
     pub r: Option<Fq>,
     pub s: Option<Fq>,
     pub msghash: Option<Fq>,
-    pub pk: Option<Secp256k1Affine>,
-    pub G: Secp256k1Affine,
+    pub pk: Option<Affine>,
+    pub G: Affine,
     pub _marker: PhantomData<F>,
 }
 impl<F: PrimeField> Default for ECDSACircuit<F> {
@@ -53,7 +65,7 @@ impl<F: PrimeField> Default for ECDSACircuit<F> {
             s: None,
             msghash: None,
             pk: None,
-            G: Secp256k1Affine::generator(),
+            G: Affine::generator(),
             _marker: PhantomData,
         }
     }
@@ -155,7 +167,7 @@ impl<F: PrimeField> Circuit<F> for ECDSACircuit<F> {
                     ),
                 );
                 // test ECDSA
-                let ecdsa = ecdsa_verify_no_pubkey_check::<F, Fp, Fq, Secp256k1Affine>(
+                let ecdsa = ecdsa_verify_no_pubkey_check::<F, Fp, Fq, Affine>(
                     &ecc_chip.field_chip,
                     ctx,
                     &pk_assigned,
@@ -184,9 +196,8 @@ impl<F: PrimeField> Circuit<F> for ECDSACircuit<F> {
 
 #[cfg(test)]
 #[test]
-fn test_secp256k1_ecdsa() {
-    println!("test_secp256k1_ecdsa()");
-
+fn test_22() {
+    println!("aaaa");
     let mut folder = std::path::PathBuf::new();
     folder.push("./src/secp256k1");
     folder.push("configs/ecdsa_circuit.config");
@@ -196,21 +207,21 @@ fn test_secp256k1_ecdsa() {
     let K = params.degree;
 
     // generate random pub key and sign random message
-    let G = Secp256k1Affine::generator();
-    let sk = <Secp256k1Affine as CurveAffine>::ScalarExt::random(OsRng);
-    let pubkey = Secp256k1Affine::from(G * sk);
-    let msg_hash = <Secp256k1Affine as CurveAffine>::ScalarExt::random(OsRng);
+    let G = Affine::generator();
+    let sk = <Affine as CurveAffine>::ScalarExt::random(OsRng);
+    let pubkey = Affine::from(G * sk);
+    let msg_hash = <Affine as CurveAffine>::ScalarExt::random(OsRng);
 
-    let k = <Secp256k1Affine as CurveAffine>::ScalarExt::random(OsRng);
+    let k = <Affine as CurveAffine>::ScalarExt::random(OsRng);
     let k_inv = k.invert().unwrap();
 
-    let r_point = Secp256k1Affine::from(G * k).coordinates().unwrap();
+    let r_point = Affine::from(G * k).coordinates().unwrap();
     let x = r_point.x();
     let x_bigint = fe_to_biguint(x);
     let r = biguint_to_fe::<Fq>(&(x_bigint % modulus::<Fq>()));
     let s = k_inv * (msg_hash + (r * sk));
 
-    let circuit = ECDSACircuit::<Fr> {
+    let circuit = ECDSACircuit::<Fq> {
         r: Some(r),
         s: Some(s),
         msghash: Some(msg_hash),
@@ -226,19 +237,7 @@ fn test_secp256k1_ecdsa() {
 
 #[cfg(test)]
 #[test]
-fn bench_secp256k1_ecdsa() -> Result<(), Box<dyn std::error::Error>> {
-    use halo2_base::utils::fs::gen_srs;
-
-    use crate::halo2_proofs::{
-        poly::kzg::{
-            commitment::KZGCommitmentScheme,
-            multiopen::{ProverSHPLONK, VerifierSHPLONK},
-            strategy::SingleStrategy,
-        },
-        transcript::{TranscriptReadBuffer, TranscriptWriterBuffer},
-    };
-    use std::{env::set_var, fs, io::BufRead};
-
+fn test_33() -> Result<(), Box<dyn std::error::Error>> {
     let _rng = OsRng;
 
     let mut folder = std::path::PathBuf::new();
@@ -250,11 +249,15 @@ fn bench_secp256k1_ecdsa() -> Result<(), Box<dyn std::error::Error>> {
     folder.pop();
 
     folder.push("results/ecdsa_bench.csv");
+
+    println!("folder: {:?}", folder);
+
     let mut fs_results = std::fs::File::create(folder.as_path()).unwrap();
     folder.pop();
     folder.pop();
     writeln!(fs_results, "degree,num_advice,num_lookup,num_fixed,lookup_bits,limb_bits,num_limbs,proof_time,proof_size,verify_time")?;
     folder.push("data");
+
     if !folder.is_dir() {
         std::fs::create_dir(folder.as_path())?;
     }
@@ -278,8 +281,10 @@ fn bench_secp256k1_ecdsa() -> Result<(), Box<dyn std::error::Error>> {
             folder.push("data");
         }
         let params_time = start_timer!(|| "Time elapsed in circuit & params construction");
-        let params = gen_srs(bench_params.degree);
-        let circuit = ECDSACircuit::<Fr>::default();
+        // let params = gen_srs(bench_params.degree);
+        let params: ParamsIPA<Affine> = ParamsIPA::new(bench_params.degree);
+
+        let circuit = ECDSACircuit::<Fq>::default();
         end_timer!(params_time);
 
         let vk_time = start_timer!(|| "Time elapsed in generating vkey");
@@ -291,90 +296,96 @@ fn bench_secp256k1_ecdsa() -> Result<(), Box<dyn std::error::Error>> {
         end_timer!(pk_time);
 
         // generate random pub key and sign random message
-        let G = Secp256k1Affine::generator();
-        let sk = <Secp256k1Affine as CurveAffine>::ScalarExt::random(OsRng);
-        let pubkey = Secp256k1Affine::from(G * sk);
-        let msg_hash = <Secp256k1Affine as CurveAffine>::ScalarExt::random(OsRng);
+        let G = Affine::generator();
+        let sk = <Affine as CurveAffine>::ScalarExt::random(OsRng);
+        let pubkey = Affine::from(G * sk);
+        let msg_hash = <Affine as CurveAffine>::ScalarExt::random(OsRng);
 
-        let k = <Secp256k1Affine as CurveAffine>::ScalarExt::random(OsRng);
+        let k = <Affine as CurveAffine>::ScalarExt::random(OsRng);
         let k_inv = k.invert().unwrap();
 
-        let r_point = Secp256k1Affine::from(G * k).coordinates().unwrap();
+        let r_point = Affine::from(G * k).coordinates().unwrap();
         let x = r_point.x();
         let x_bigint = fe_to_biguint(x);
         let r = biguint_to_fe::<Fq>(&x_bigint);
         let s = k_inv * (msg_hash + (r * sk));
 
-        let proof_circuit = ECDSACircuit::<Fr> {
-            r: Some(r),
-            s: Some(s),
-            msghash: Some(msg_hash),
-            pk: Some(pubkey),
-            G,
-            _marker: PhantomData,
-        };
         let mut rng = OsRng;
 
-        // create a proof
+        // // create a proof
         let proof_time = start_timer!(|| "Proving time");
         let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
-        create_proof::<
-            KZGCommitmentScheme<Bn256>,
-            ProverSHPLONK<'_, Bn256>,
-            Challenge255<G1Affine>,
-            _,
-            Blake2bWrite<Vec<u8>, G1Affine, Challenge255<G1Affine>>,
-            ECDSACircuit<Fr>,
-        >(&params, &pk, &[proof_circuit], &[&[]], &mut rng, &mut transcript)?;
+
+        create_proof::<IPACommitmentScheme<_>, ProverIPA<_>, _, _, _, _>(
+            &params,
+            &pk,
+            &[circuit],
+            &[&[&[]]],
+            &mut rng,
+            &mut transcript,
+        )
+        .unwrap();
+
+        // create_proof::<
+        //     KZGCommitmentScheme<Bn256>,
+        //     ProverSHPLONK<'_, Bn256>,
+        //     Challenge255<G1Affine>,
+        //     _,
+        //     Blake2bWrite<Vec<u8>, G1Affine, Challenge255<G1Affine>>,
+        //     ECDSACircuit<Fr>,
+        // >(&params, &pk, &[proof_circuit], &[&[]], &mut rng, &mut transcript)?;
         let proof = transcript.finalize();
         end_timer!(proof_time);
 
-        let proof_size = {
-            folder.push(format!(
-                "ecdsa_circuit_proof_{}_{}_{}_{}_{}_{}_{}.data",
-                bench_params.degree,
-                bench_params.num_advice,
-                bench_params.num_lookup_advice,
-                bench_params.num_fixed,
-                bench_params.lookup_bits,
-                bench_params.limb_bits,
-                bench_params.num_limbs
-            ));
-            let mut fd = std::fs::File::create(folder.as_path()).unwrap();
-            folder.pop();
-            fd.write_all(&proof).unwrap();
-            fd.metadata().unwrap().len()
-        };
+        // let proof_size = {
+        //     folder.push(format!(
+        //         "ecdsa_circuit_proof_{}_{}_{}_{}_{}_{}_{}.data",
+        //         bench_params.degree,
+        //         bench_params.num_advice,
+        //         bench_params.num_lookup_advice,
+        //         bench_params.num_fixed,
+        //         bench_params.lookup_bits,
+        //         bench_params.limb_bits,
+        //         bench_params.num_limbs
+        //     ));
+        //     let mut fd = std::fs::File::create(folder.as_path()).unwrap();
+        //     folder.pop();
+        //     fd.write_all(&proof).unwrap();
+        //     fd.metadata().unwrap().len()
+        // };
 
         let verify_time = start_timer!(|| "Verify time");
         let verifier_params = params.verifier_params();
         let strategy = SingleStrategy::new(&params);
         let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
-        assert!(verify_proof::<
-            KZGCommitmentScheme<Bn256>,
-            VerifierSHPLONK<'_, Bn256>,
-            Challenge255<G1Affine>,
-            Blake2bRead<&[u8], G1Affine, Challenge255<G1Affine>>,
-            SingleStrategy<'_, Bn256>,
-        >(verifier_params, pk.get_vk(), strategy, &[&[]], &mut transcript)
-        .is_ok());
-        end_timer!(verify_time);
-        fs::remove_file(var("ECDSA_CONFIG").unwrap())?;
 
-        writeln!(
-            fs_results,
-            "{},{},{},{},{},{},{},{:?},{},{:?}",
-            bench_params.degree,
-            bench_params.num_advice,
-            bench_params.num_lookup_advice,
-            bench_params.num_fixed,
-            bench_params.lookup_bits,
-            bench_params.limb_bits,
-            bench_params.num_limbs,
-            proof_time.time.elapsed(),
-            proof_size,
-            verify_time.time.elapsed()
-        )?;
+        assert!(verify_proof(&params, pk.get_vk(), strategy, &[&[&[]]], &mut transcript).is_ok());
+
+        // assert!(verify_proof::<
+        //     KZGCommitmentScheme<Bn256>,
+        //     VerifierSHPLONK<'_, Bn256>,
+        //     Challenge255<G1Affine>,
+        //     Blake2bRead<&[u8], G1Affine, Challenge255<G1Affine>>,
+        //     SingleStrategy<'_, Bn256>,
+        // >(verifier_params, pk.get_vk(), strategy, &[&[]], &mut transcript)
+        // .is_ok());
+        // end_timer!(verify_time);
+        // fs::remove_file(var("ECDSA_CONFIG").unwrap())?;
+
+        // writeln!(
+        //     fs_results,
+        //     "{},{},{},{},{},{},{},{:?},{},{:?}",
+        //     bench_params.degree,
+        //     bench_params.num_advice,
+        //     bench_params.num_lookup_advice,
+        //     bench_params.num_fixed,
+        //     bench_params.lookup_bits,
+        //     bench_params.limb_bits,
+        //     bench_params.num_limbs,
+        //     proof_time.time.elapsed(),
+        //     proof_size,
+        //     verify_time.time.elapsed()
+        // )?;
     }
     Ok(())
 }
